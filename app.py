@@ -19,6 +19,13 @@ SARVAM_API_KEY = os.getenv("SARVAM_API_KEY")
 SARVAM_ORG_ID = os.getenv("SARVAM_ORG_ID")
 SARVAM_WORKSPACE_ID = os.getenv("SARVAM_WORKSPACE_ID")
 SARVAM_APP_ID = os.getenv("SARVAM_APP_ID")
+CONNECTION_ID = os.getenv("CONNECTION_ID")
+AGENT_PHONE_NUMBER = os.getenv("AGENT_PHONE_NUMBER")
+
+print("sarvam key", SARVAM_API_KEY)
+print("sarvam org id", SARVAM_ORG_ID)
+print("sarvam workspace id", SARVAM_WORKSPACE_ID)
+print("sarvam app id", SARVAM_APP_ID)
 
 
 
@@ -60,11 +67,14 @@ def create_outbound_call():
 
         payload = {
             "app_config": {
-                "app_id": body.get("app_id", SARVAM_APP_ID),
+                "app_id": SARVAM_APP_ID,
+                # body.get("app_id", SARVAM_APP_ID),
                 "app_version": body.get("app_version", 1),
                 "connection_config": {
-                    "connection_id": body.get("connection_id", "Vobiz-Secur-32799d0c-2d55"),
-                    "agent_phone_number": body.get("agent_phone_number", "+918071581516")
+                    "connection_id":CONNECTION_ID,
+                    #   body.get("connection_id", "Vobiz-Secur-32799d0c-2d55"),
+                    "agent_phone_number": AGENT_PHONE_NUMBER
+                    # body.get("agent_phone_number", "+918071581516")
                 },
                 "agent_variables": variables
 
@@ -399,6 +409,79 @@ def receive_call_webhook():
     # Process call completion logic, save to DB, etc.
     return jsonify({"status": "received"}), 200
 
+# -------------------------------------------------------------------
+# API Endpoint 6: Inbound Call Webhook Receiver
+# -------------------------------------------------------------------
+# Store recent calls in memory if you don't have a database connected yet
+recent_inbound_calls = []
+
+@app.route("/api/sarvam/inbound-webhook", methods=["POST"])
+def receive_inbound_call_webhook():
+    """
+    Receives automated post-call notifications from Sarvam AI when an inbound call completes.
+    Endpoint URL to set in Sarvam/Vobiz: https://<your-domain>/api/sarvam/inbound-webhook
+    """
+    try:
+        payload = request.get_json() or {}
+        print("\n================ [INBOUND CALL WEBHOOK RECEIVED] ================")
+        print(json.dumps(payload, indent=2))
+        print("=================================================================\n")
+
+        # Extract primary call details from Sarvam payload
+        interaction_id = payload.get("interaction_id")
+        attempt_id = payload.get("attempt_id")
+        user_phone = payload.get("user_phone_number") or payload.get("user_contact")
+        agent_phone = payload.get("agent_phone_number")
+        duration = payload.get("duration") or payload.get("duration_in_seconds")
+        transcript = payload.get("interaction_transcript") or payload.get("transcript")
+        extracted_variables = payload.get("final_agent_variables") or payload.get("agent_variables") or {}
+
+        # Build normalized call result object
+        processed_call_data = {
+            "type": "inbound_call_completed",
+            "interaction_id": interaction_id,
+            "attempt_id": attempt_id,
+            "user_phone": user_phone,
+            "agent_phone": agent_phone,
+            "duration_seconds": duration,
+            "transcript": transcript,
+            "extracted_variables": extracted_variables,
+            "received_at": datetime.now(timezone.utc).isoformat(),
+            "raw_payload": payload
+        }
+
+        # 1. Store in local memory array (keep latest 20 calls)
+        recent_inbound_calls.insert(0, processed_call_data)
+        if len(recent_inbound_calls) > 20:
+            recent_inbound_calls.pop()
+
+        # 2. OPTIONAL: If using Flask-SocketIO, emit event directly to Frontend UI
+        # socketio.emit("inbound_call_completed", processed_call_data)
+
+        return jsonify({
+            "status": "success",
+            "message": "Inbound call data received and processed",
+            "interaction_id": interaction_id
+        }), 200
+
+    except Exception as e:
+        print(f"[ERROR] Failed to process inbound webhook: {str(e)}")
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500
+
+
+# -------------------------------------------------------------------
+# Helper API Endpoint: Fetch Latest Inbound Calls for Frontend Polling
+# -------------------------------------------------------------------
+@app.route("/api/sarvam/inbound-calls/latest", methods=["GET"])
+def get_latest_inbound_calls():
+    """
+    Frontend UI can poll this endpoint every 3-5 seconds to check for new inbound calls.
+    """
+    return jsonify({
+        "total": len(recent_inbound_calls),
+        "latest_call": recent_inbound_calls[0] if recent_inbound_calls else None,
+        "calls": recent_inbound_calls
+    }), 200
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
