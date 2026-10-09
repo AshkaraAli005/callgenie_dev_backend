@@ -21,6 +21,7 @@ SARVAM_WORKSPACE_ID = os.getenv("SARVAM_WORKSPACE_ID")
 SARVAM_APP_ID = os.getenv("SARVAM_APP_ID")
 CONNECTION_ID = os.getenv("CONNECTION_ID")
 AGENT_PHONE_NUMBER = os.getenv("AGENT_PHONE_NUMBER")
+ACPL_AGENT_STAFF_CHECKING_APP_ID = os.getenv("ACPL_AGENT_STAFF_CHECKING_APP_ID")
 
 # Default fallback mobile number for triggering automatic outbound calls
 DEFAULT_OUTBOUND_PHONE_NUMBER = os.getenv("DEFAULT_OUTBOUND_PHONE_NUMBER", "+919841761512")
@@ -40,12 +41,12 @@ def get_headers():
 
 
 # Helper function to trigger Outbound Calls programmatically
-def trigger_outbound_call_internal(target_phone_number, initial_variables=None):
+def trigger_outbound_call_internal(target_phone_number, initial_variables=None, app_id=SARVAM_APP_ID):
     """Internal helper to initiate an outbound call via Sarvam API."""
     try:
         payload = {
             "app_config": {
-                "app_id": SARVAM_APP_ID,
+                "app_id": app_id,
                 "app_version": 1,
                 "connection_config": {
                     "connection_id": CONNECTION_ID,
@@ -378,25 +379,26 @@ def receive_inbound_call_webhook():
         #     **extracted_variables
         # }
         outbound_variables={
-    "requirement_id": "RITCO-REQ-10245",
-    "pickup_location": "Chennai",
-    "delivery_location": "Bangalore",
-    "pickup_datetime": "1 Oct 2026, 8:00 AM",
-    "vehicle_type_required": "32 Feet Multi-Axle",
-    "capacity_required": "9 Ton",
-    "cargo_weight": "8.5 Ton",
-    "cargo_description": "Automobile spare parts",
-    "vendor_name": "Sri Balaji Transport",
-    "vendor_contact_name": "Murali",
-    "vendor_phone": "+919841761512",
-    "special_requirements": "GPS required, no transshipment"
+    # "bookingDate": "02-10-2026",
+    # "CurrentTransitState": "Satara Hub",
+    # "CustomerName": "Ramya",
+    # "CustomerQuery": "tracking shows “In Transit” status for past 2 days. What is the reason?",
+    # "Destination": "JNPT",
+    # "capacity_required": "9 Ton",
+    # "cargo_weight": "8.5 Ton",
+    # "cargo_description": "Automobile spare parts",
+    # "vendor_name": "Sri Balaji Transport",
+    # "vendor_contact_name": "Murali",
+    # "vendor_phone": "+919841761512",
+    # "special_requirements": "GPS required, no transshipment"
 }
 
         print(f"[WORKFLOW] Inbound hangup received. Initiating automated outbound call to {outbound_target_number}...")
         
         outbound_response, status_code = trigger_outbound_call_internal(
             target_phone_number=outbound_target_number,
-            initial_variables=outbound_variables
+            initial_variables=outbound_variables,
+            app_id = ACPL_AGENT_STAFF_CHECKING_APP_ID,
         )
 
         return jsonify({
