@@ -372,11 +372,25 @@ def receive_inbound_call_webhook():
 
         # Trigger automatic outbound call on hangup
         outbound_target_number =  DEFAULT_OUTBOUND_PHONE_NUMBER
-        outbound_variables = {
-            "inbound_caller_phone": caller_phone,
-            "previous_interaction_id": interaction_id,
-            **extracted_variables
-        }
+        # outbound_variables = {
+        #     "inbound_caller_phone": caller_phone,
+        #     "previous_interaction_id": interaction_id,
+        #     **extracted_variables
+        # }
+        outbound_variables={
+    "requirement_id": "RITCO-REQ-10245",
+    "pickup_location": "Chennai",
+    "delivery_location": "Bangalore",
+    "pickup_datetime": "1 Oct 2026, 8:00 AM",
+    "vehicle_type_required": "32 Feet Multi-Axle",
+    "capacity_required": "9 Ton",
+    "cargo_weight": "8.5 Ton",
+    "cargo_description": "Automobile spare parts",
+    "vendor_name": "Sri Balaji Transport",
+    "vendor_contact_name": "Murali",
+    "vendor_phone": "+919841761512",
+    "special_requirements": "GPS required, no transshipment"
+}
 
         print(f"[WORKFLOW] Inbound hangup received. Initiating automated outbound call to {outbound_target_number}...")
         
