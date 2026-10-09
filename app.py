@@ -22,12 +22,8 @@ SARVAM_APP_ID = os.getenv("SARVAM_APP_ID")
 CONNECTION_ID = os.getenv("CONNECTION_ID")
 AGENT_PHONE_NUMBER = os.getenv("AGENT_PHONE_NUMBER")
 
-print("sarvam key", SARVAM_API_KEY)
-print("sarvam org id", SARVAM_ORG_ID)
-print("sarvam workspace id", SARVAM_WORKSPACE_ID)
-print("sarvam app id", SARVAM_APP_ID)
-
-
+# Default fallback mobile number for triggering automatic outbound calls
+DEFAULT_OUTBOUND_PHONE_NUMBER = os.getenv("DEFAULT_OUTBOUND_PHONE_NUMBER", "+919841761512")
 
 BASE_OUTBOUND_URL = f"https://apps.sarvam.ai/api/outbounds/v1/orgs/{SARVAM_ORG_ID}/workspaces/{SARVAM_WORKSPACE_ID}"
 BASE_ANALYTICS_URL = f"https://apps.sarvam.ai/api/analytics/v1/{SARVAM_ORG_ID}/{SARVAM_WORKSPACE_ID}/{SARVAM_APP_ID}"
@@ -43,52 +39,26 @@ def get_headers():
     }
 
 
-# -------------------------------------------------------------------
-# API Endpoint 1: Create Outbound Call
-# -------------------------------------------------------------------
-@app.route("/api/sarvam/outbound", methods=["POST"])
-def create_outbound_call():
-    """Triggers an instant outbound AI call with initial variables."""
+# Helper function to trigger Outbound Calls programmatically
+def trigger_outbound_call_internal(target_phone_number, initial_variables=None):
+    """Internal helper to initiate an outbound call via Sarvam API."""
     try:
-        body = request.get_json() or {}
-
-        # --------------------------------------------------------------
-        # CRITICAL FIX: Sarvam requires "initial_agent_variables"
-        # --------------------------------------------------------------
-        variables = (
-            body.get("initial_agent_variables") or 
-            body.get("agent_variables") or 
-            body.get("initialAgentVariables")
-        )
-
-        # if variables and isinstance(variables, dict):
-        #     payload["initial_agent_variables"] = variables
-
-
         payload = {
             "app_config": {
                 "app_id": SARVAM_APP_ID,
-                # body.get("app_id", SARVAM_APP_ID),
-                "app_version": body.get("app_version", 1),
+                "app_version": 1,
                 "connection_config": {
-                    "connection_id":CONNECTION_ID,
-                    #   body.get("connection_id", "Vobiz-Secur-32799d0c-2d55"),
+                    "connection_id": CONNECTION_ID,
                     "agent_phone_number": AGENT_PHONE_NUMBER
-                    # body.get("agent_phone_number", "+918071581516")
                 },
-                "agent_variables": variables
-
+                "agent_variables": initial_variables or {}
             },
             "user_config": {
-                "user_phone_number": body.get("user_phone_number")
+                "user_phone_number": target_phone_number
             }
         }
 
-
-        if "webhook_config" in body:
-            payload["webhook_config"] = body["webhook_config"]
-
-        print("Sending Payload to Sarvam:", json.dumps(payload, indent=2))
+        print(f"[OUTBOUND] Triggering call to {target_phone_number} with variables:", json.dumps(payload, indent=2))
 
         response = requests.post(
             f"{BASE_OUTBOUND_URL}/outbounds",
@@ -96,22 +66,41 @@ def create_outbound_call():
             headers=get_headers(),
             timeout=15
         )
+        return response.json(), response.status_code
+    except Exception as e:
+        print(f"[ERROR] Failed to trigger internal outbound call: {str(e)}")
+        return {"error": str(e)}, 500
 
-        return (jsonify(response.json()), response.status_code)
+
+# -------------------------------------------------------------------
+# API Endpoint 1: Create Outbound Call (Manual API Route)
+# -------------------------------------------------------------------
+@app.route("/api/sarvam/outbound", methods=["POST"])
+def create_outbound_call():
+    """Triggers an instant outbound AI call with initial variables."""
+    try:
+        body = request.get_json() or {}
+        variables = (
+            body.get("initial_agent_variables") or 
+            body.get("agent_variables") or 
+            body.get("initialAgentVariables")
+        )
+        target_number = body.get("user_phone_number") or DEFAULT_OUTBOUND_PHONE_NUMBER
+
+        res_data, status_code = trigger_outbound_call_internal(target_number, variables)
+        return jsonify(res_data), status_code
 
     except requests.exceptions.RequestException as e:
         error_msg = e.response.json() if e.response is not None else str(e)
         status_code = e.response.status_code if e.response is not None else 500
         return jsonify({"error": "Sarvam API request failed", "details": error_msg}), status_code
 
+
 # -------------------------------------------------------------------
 # Helper: Find Attempt and Interaction ID from Analytics List
 # -------------------------------------------------------------------
 def find_attempt_in_analytics(target_attempt_id):
-    """
-    Queries Sarvam analytics and searches the 'items' array
-    for the specific attempt_id.
-    """
+    """Queries Sarvam analytics for attempt details."""
     now = datetime.now(timezone.utc)
     start_time = (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     end_time = (now + timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
@@ -122,98 +111,24 @@ def find_attempt_in_analytics(target_attempt_id):
     }
 
     url = f"{BASE_ANALYTICS_URL}/attempts"
-    print(f"[DEBUG] Fetching attempts from {url}")
-
     res = requests.get(url, params=params, headers=get_headers(), timeout=15)
     
     if res.status_code != 200:
-        print(f"[ERROR] Sarvam returned {res.status_code}: {res.text}")
         return None, res.status_code
 
     attempts_data = res.json()
-    print(attempts_data)
-
-    # FIX: Sarvam uses "items" as the key!
     attempts_list = (
         attempts_data.get("items")
         or attempts_data.get("attempts")
         or (attempts_data if isinstance(attempts_data, list) else [])
     )
 
-    print(f"[DEBUG] Found {len(attempts_list)} attempts in range.")
-
-    # Search for the target attempt_id
     for item in attempts_list:
         if item.get("attempt_id") == target_attempt_id:
             return item, 200
 
     return None, 404
 
-
-# -------------------------------------------------------------------
-# API Endpoint 2: Get Attempt Data by attempt_id
-# -------------------------------------------------------------------
-# @app.route("/api/sarvam/attempts/<attempt_id>", methods=["GET"])
-# def get_attempt_by_id(attempt_id):
-#     """Retrieves call attempt metadata for a specific attempt_id."""
-#     try:
-#         response = requests.get(
-#             f"{BASE_ANALYTICS_URL}/attempts/{attempt_id}",
-#             headers=get_headers(),
-#             timeout=15
-#         )
-#         return (jsonify(response.json()), response.status_code)
-
-#     except requests.exceptions.RequestException as e:
-#         error_msg = e.response.json() if e.response is not None else str(e)
-#         status_code = e.response.status_code if e.response is not None else 500
-#         return jsonify({"error": "Failed to fetch attempt data", "details": error_msg}), status_code
-
-# -------------------------------------------------------------------
-# API Endpoint 2: Get Attempt Data by attempt_id (FIXED)
-# -------------------------------------------------------------------
-# @app.route("/api/sarvam/attempts/<attempt_id>", methods=["GET"])
-# def get_attempt_by_id(attempt_id):
-#     """Retrieves call attempt metadata for a specific attempt_id."""
-#     try:
-#         # 1. Primary check: Query the Outbound API (where the call was created)
-#         outbound_url = f"{BASE_OUTBOUND_URL}/outbounds/{attempt_id}"
-#         print(f"[DEBUG] Fetching call status from: {outbound_url}")
-
-#         response = requests.get(
-#             outbound_url,
-#             headers=get_headers(),
-#             timeout=15
-#         )
-
-#         # 2. If Outbound API returns 200, return data immediately
-#         if response.status_code == 200:
-#             return jsonify(response.json()), 200
-
-#         # 3. Fallback: If 404 on outbound, attempt checking Analytics API
-#         analytics_url = f"https://apps.sarvam.ai/api/analytics/v1/orgs/{SARVAM_ORG_ID}/workspaces/{SARVAM_WORKSPACE_ID}/apps/{SARVAM_APP_ID}/attempts/{attempt_id}"
-#         print(f"[DEBUG] Fallback checking analytics: {analytics_url}")
-        
-#         fallback_res = requests.get(
-#             analytics_url,
-#             headers=get_headers(),
-#             timeout=15
-#         )
-
-#         if fallback_res.status_code == 200:
-#             return jsonify(fallback_res.json()), 200
-
-#         # Return the original error if neither succeeded
-#         return jsonify({
-#             "error": "Call attempt not found (404)",
-#             "attempt_id": attempt_id,
-#             "sarvam_response": response.json() if response.headers.get("content-type") == "application/json" else response.text
-#         }), 404
-
-#     except requests.exceptions.RequestException as e:
-#         error_msg = e.response.json() if e.response is not None else str(e)
-#         status_code = e.response.status_code if e.response is not None else 500
-#         return jsonify({"error": "Failed to fetch attempt data", "details": error_msg}), status_code
 
 # -------------------------------------------------------------------
 # API Endpoint 2: Get Attempt Data + Transcript + Audio URL
@@ -234,34 +149,27 @@ def get_attempt_by_id(attempt_id):
         interaction_id = attempt_item.get("interaction_id")
         transcript_data = None
 
-        # Fetch transcript if a valid interaction_id exists (not 'NO_INTERACTION_ID')
         if interaction_id and interaction_id != "NO_INTERACTION_ID":
             try:
-                # ⚠️ URL-encode the interaction_id because it contains slashes like '20261001/f65e9a24...'
-                # encoded_interaction_id = urllib.parse.quote(interaction_id, safe='')
                 transcript_url = f"{BASE_ANALYTICS_URL}/transcripts/{interaction_id}"
-                
                 t_res = requests.get(transcript_url, headers=get_headers(), timeout=10)
                 if t_res.status_code == 200:
                     transcript_data = t_res.json()
-                else:
-                    print(f"[WARN] Transcript fetch failed ({t_res.status_code}): {t_res.text}")
             except Exception as t_err:
                 print(f"[WARN] Transcript exception: {t_err}")
 
-        # Construct a clean, normalized response object for the frontend
         normalized_response = {
             "attempt_id": attempt_item.get("attempt_id"),
             "interaction_id": interaction_id if interaction_id != "NO_INTERACTION_ID" else None,
-            "status": attempt_item.get("connectivity_status"),        # 'connected', 'failed', etc.
+            "status": attempt_item.get("connectivity_status"),
             "failure_reason": attempt_item.get("failure_reason"),
-            "ended_by": attempt_item.get("ended_by"),                # 'USER_ENDS', 'AGENT_ENDS'
-            "duration": attempt_item.get("duration_in_seconds"),     # e.g., 6.30
-            "language": attempt_item.get("language_name"),           # 'Tamil'
-            "user_phone": attempt_item.get("user_contact"),          # '+919841761512'
-            "audio_url": attempt_item.get("audio_url"),              # Direct playable link
-            "agent_variables": attempt_item.get("agent_variables"),  # Extracted variables dict
-            "transcript": transcript_data,                           # Call transcript
+            "ended_by": attempt_item.get("ended_by"),
+            "duration": attempt_item.get("duration_in_seconds"),
+            "language": attempt_item.get("language_name"),
+            "user_phone": attempt_item.get("user_contact"),
+            "audio_url": attempt_item.get("audio_url"),
+            "agent_variables": attempt_item.get("agent_variables"),
+            "transcript": transcript_data,
             "raw": attempt_item
         }
 
@@ -271,6 +179,8 @@ def get_attempt_by_id(attempt_id):
         error_msg = e.response.json() if e.response is not None else str(e)
         status_code = e.response.status_code if e.response is not None else 500
         return jsonify({"error": "Failed to fetch attempt data", "details": error_msg}), status_code
+
+
 # -------------------------------------------------------------------
 # API Endpoint 3: Query Attempts by Date Range
 # -------------------------------------------------------------------
@@ -319,17 +229,14 @@ def get_transcript(interaction_id):
         status_code = e.response.status_code if e.response is not None else 500
         return jsonify({"error": "Failed to fetch transcript", "details": error_msg}), status_code
 
+
 # -------------------------------------------------------------------
-# API Endpoint: Get Output Variables by interaction_id
+# API Endpoint 5: Get Output Variables by interaction_id
 # -------------------------------------------------------------------
 @app.route("/api/sarvam/interactions/<path:interaction_id>/variables", methods=["GET"])
 def get_variables_by_interaction_id(interaction_id):
-    """
-    Fetches the final extracted variables and distinguishes between
-    Input variables and Extracted Output variables.
-    """
+    """Fetches the final extracted variables and distinguishes input vs output."""
     try:
-        # 1. Query Sarvam analytics for attempts in the last 24 hours
         now = datetime.now(timezone.utc)
         start_time = (now - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         end_time = (now + timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
@@ -338,7 +245,6 @@ def get_variables_by_interaction_id(interaction_id):
             "start_datetime": start_time,
             "end_datetime": end_time
         }
-        print(interaction_id)
 
         url = f"{BASE_ANALYTICS_URL}/attempts"
         res = requests.get(url, params=params, headers=get_headers(), timeout=15)
@@ -349,7 +255,6 @@ def get_variables_by_interaction_id(interaction_id):
         attempts_data = res.json()
         attempts_list = attempts_data.get("items") or attempts_data.get("attempts") or []
 
-        # 2. Find the attempt matching the interaction_id
         matching_attempt = None
         for item in attempts_list:
             if item.get("interaction_id") == interaction_id:
@@ -362,11 +267,8 @@ def get_variables_by_interaction_id(interaction_id):
                 "interaction_id": interaction_id
             }), 404
 
-        # 3. Extract variables
         all_variables = matching_attempt.get("agent_variables") or {}
 
-        # 4. Separate initial inputs vs AI extracted outputs
-        # (Customize input keys based on what you pass initially)
         input_keys = {
             "requirement_id", "vendor_name", "vendor_contact_name", "vendor_phone",
             "pickup_location", "delivery_location", "pickup_datetime",
@@ -389,7 +291,6 @@ def get_variables_by_interaction_id(interaction_id):
             "connectivity_status": matching_attempt.get("connectivity_status"),
             "duration_in_seconds": matching_attempt.get("duration_in_seconds"),
             "ended_by": matching_attempt.get("ended_by"),
-            # Cleanly separated results:
             "extracted_outputs": extracted_output_variables,
             "input_variables": input_variables,
             "all_variables": all_variables
@@ -397,51 +298,55 @@ def get_variables_by_interaction_id(interaction_id):
 
     except Exception as e:
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
+
+
 # -------------------------------------------------------------------
-# API Endpoint 5: Webhook Endpoint (Optional / Incoming from Sarvam)
+# API Endpoint 6: General Webhook Receiver
 # -------------------------------------------------------------------
 @app.route("/api/sarvam/webhook", methods=["POST"])
 def receive_call_webhook():
-    """Receives automated call result webhooks sent by Sarvam when a call completes."""
+    """Receives automated call result webhooks sent by Sarvam."""
     webhook_data = request.get_json() or {}
     print("Received Sarvam Webhook Payload:", webhook_data)
-    
-    # Process call completion logic, save to DB, etc.
     return jsonify({"status": "received"}), 200
 
+
 # -------------------------------------------------------------------
-# API Endpoint 6: Inbound Call Webhook Receiver
+# API Endpoint 7: Inbound Call Webhook Receiver & Automatic Outbound Trigger
 # -------------------------------------------------------------------
-# Store recent calls in memory if you don't have a database connected yet
 recent_inbound_calls = []
 
 @app.route("/api/sarvam/inbound-webhook", methods=["POST"])
 def receive_inbound_call_webhook():
     """
-    Receives automated post-call notifications from Sarvam AI when an inbound call completes.
-    Endpoint URL to set in Sarvam/Vobiz: https://<your-domain>/api/sarvam/inbound-webhook
+    1. Receives inbound call hangup notification from Sarvam AI.
+    2. Extracts final agent output variables & call transcript.
+    3. Triggers an automatic outbound call using default mobile number + extracted data.
     """
     try:
         payload = request.get_json() or {}
-        print("\n================ [INBOUND CALL WEBHOOK RECEIVED] ================")
+        print("\n================ [INBOUND CALL HANGUP WEBHOOK RECEIVED] ================")
         print(json.dumps(payload, indent=2))
-        print("=================================================================\n")
+        print("=======================================================================\n")
 
-        # Extract primary call details from Sarvam payload
         interaction_id = payload.get("interaction_id")
         attempt_id = payload.get("attempt_id")
-        user_phone = payload.get("user_phone_number") or payload.get("user_contact")
+        caller_phone = payload.get("user_phone_number") or payload.get("user_contact")
         agent_phone = payload.get("agent_phone_number")
         duration = payload.get("duration") or payload.get("duration_in_seconds")
         transcript = payload.get("interaction_transcript") or payload.get("transcript")
-        extracted_variables = payload.get("final_agent_variables") or payload.get("agent_variables") or {}
+        
+        extracted_variables = (
+            payload.get("final_agent_variables") or 
+            payload.get("agent_variables") or 
+            {}
+        )
 
-        # Build normalized call result object
         processed_call_data = {
             "type": "inbound_call_completed",
             "interaction_id": interaction_id,
             "attempt_id": attempt_id,
-            "user_phone": user_phone,
+            "user_phone": caller_phone,
             "agent_phone": agent_phone,
             "duration_seconds": duration,
             "transcript": transcript,
@@ -450,18 +355,31 @@ def receive_inbound_call_webhook():
             "raw_payload": payload
         }
 
-        # 1. Store in local memory array (keep latest 20 calls)
         recent_inbound_calls.insert(0, processed_call_data)
         if len(recent_inbound_calls) > 20:
             recent_inbound_calls.pop()
 
-        # 2. OPTIONAL: If using Flask-SocketIO, emit event directly to Frontend UI
-        # socketio.emit("inbound_call_completed", processed_call_data)
+        # Trigger automatic outbound call on hangup
+        outbound_target_number = caller_phone or DEFAULT_OUTBOUND_PHONE_NUMBER
+        outbound_variables = {
+            "inbound_caller_phone": caller_phone,
+            "previous_interaction_id": interaction_id,
+            **extracted_variables
+        }
+
+        print(f"[WORKFLOW] Inbound hangup received. Initiating automated outbound call to {outbound_target_number}...")
+        
+        outbound_response, status_code = trigger_outbound_call_internal(
+            target_phone_number=outbound_target_number,
+            initial_variables=outbound_variables
+        )
 
         return jsonify({
             "status": "success",
-            "message": "Inbound call data received and processed",
-            "interaction_id": interaction_id
+            "message": "Inbound hangup processed & outbound call triggered",
+            "inbound_interaction_id": interaction_id,
+            "outbound_trigger_status": status_code,
+            "outbound_response": outbound_response
         }), 200
 
     except Exception as e:
@@ -474,16 +392,14 @@ def receive_inbound_call_webhook():
 # -------------------------------------------------------------------
 @app.route("/api/sarvam/inbound-calls/latest", methods=["GET"])
 def get_latest_inbound_calls():
-    """
-    Frontend UI can poll this endpoint every 3-5 seconds to check for new inbound calls.
-    """
+    """Frontend UI polls this endpoint to update UI dynamically on call completion."""
     return jsonify({
         "total": len(recent_inbound_calls),
         "latest_call": recent_inbound_calls[0] if recent_inbound_calls else None,
         "calls": recent_inbound_calls
     }), 200
 
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
-
