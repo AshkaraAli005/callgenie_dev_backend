@@ -371,7 +371,7 @@ def receive_inbound_call_webhook():
             recent_inbound_calls.pop()
 
         # Trigger automatic outbound call on hangup
-        outbound_target_number = caller_phone or DEFAULT_OUTBOUND_PHONE_NUMBER
+        outbound_target_number =  DEFAULT_OUTBOUND_PHONE_NUMBER
         outbound_variables = {
             "inbound_caller_phone": caller_phone,
             "previous_interaction_id": interaction_id,
