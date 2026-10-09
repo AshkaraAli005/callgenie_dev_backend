@@ -320,15 +320,26 @@ recent_inbound_calls = []
 def receive_inbound_call_webhook():
     """
     1. Receives inbound call hangup notification from Sarvam AI.
-    2. Extracts final agent output variables & call transcript.
+    2. Extracts final agent output variables & call transcript safely.
     3. Triggers an automatic outbound call using default mobile number + extracted data.
     """
     try:
-        payload = request.get_json() or {}
+        # ROBUST FIX: Handle cases where Content-Type isn't strictly application/json
+        payload = {}
+        if request.is_json:
+            payload = request.get_json(silent=True) or {}
+        else:
+            # Fallback for plain text or missing content-type headers from webhooks
+            try:
+                payload = json.loads(request.data.decode('utf-8'))
+            except Exception:
+                payload = request.form.to_dict() or {}
+
         print("\n================ [INBOUND CALL HANGUP WEBHOOK RECEIVED] ================")
         print(json.dumps(payload, indent=2))
         print("=======================================================================\n")
 
+        # Extract inbound call data
         interaction_id = payload.get("interaction_id")
         attempt_id = payload.get("attempt_id")
         caller_phone = payload.get("user_phone_number") or payload.get("user_contact")
@@ -385,7 +396,6 @@ def receive_inbound_call_webhook():
     except Exception as e:
         print(f"[ERROR] Failed to process inbound webhook: {str(e)}")
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
-
 
 # -------------------------------------------------------------------
 # Helper API Endpoint: Fetch Latest Inbound Calls for Frontend Polling
