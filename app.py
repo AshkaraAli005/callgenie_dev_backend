@@ -88,7 +88,12 @@ def create_outbound_call():
         )
         target_number = body.get("user_phone_number") or DEFAULT_OUTBOUND_PHONE_NUMBER
 
-        res_data, status_code = trigger_outbound_call_internal(target_number, variables)
+        if body.get("app_id"):
+            app_id = body.get("app_id")
+        else:
+            app_id = SARVAM_APP_ID
+
+        res_data, status_code = trigger_outbound_call_internal(target_number, variables, app_id)
         return jsonify(res_data), status_code
 
     except requests.exceptions.RequestException as e:
@@ -118,11 +123,14 @@ def find_attempt_in_analytics(target_attempt_id):
         return None, res.status_code
 
     attempts_data = res.json()
+    print("Received Analytics Response:", attempts_data)
     attempts_list = (
         attempts_data.get("items")
         or attempts_data.get("attempts")
         or (attempts_data if isinstance(attempts_data, list) else [])
     )
+
+    print("Found {} attempts in analytics".format(len(attempts_list)))
 
     for item in attempts_list:
         if item.get("attempt_id") == target_attempt_id:
@@ -316,21 +324,38 @@ def receive_call_webhook():
 # API Endpoint 7: Inbound Call Webhook Receiver & Automatic Outbound Trigger
 # -------------------------------------------------------------------
 recent_inbound_calls = []
+def extract_all_variables(payload):
+    """
+    Extracts agent variables from all possible locations inside Sarvam/Vobiz webhooks.
+    """
+    # 1. Try standard variable keys in payload
+    vars_dict = (
+        payload.get("final_agent_variables") or 
+        payload.get("agent_variables") or 
+        payload.get("extracted_variables") or 
+        payload.get("output_variables") or 
+        {}
+    )
+    
+    # 2. Check if variables are nested inside "data" or "result" blocks
+    if not vars_dict and "data" in payload:
+        data_block = payload.get("data", {})
+        vars_dict = (
+            data_block.get("final_agent_variables") or 
+            data_block.get("agent_variables") or 
+            {}
+        )
+        
+    return vars_dict if isinstance(vars_dict, dict) else {}
+
 
 @app.route("/api/sarvam/inbound-webhook", methods=["POST"])
 def receive_inbound_call_webhook():
-    """
-    1. Receives inbound call hangup notification from Sarvam AI.
-    2. Extracts final agent output variables & call transcript safely.
-    3. Triggers an automatic outbound call using default mobile number + extracted data.
-    """
     try:
-        # ROBUST FIX: Handle cases where Content-Type isn't strictly application/json
         payload = {}
         if request.is_json:
             payload = request.get_json(silent=True) or {}
         else:
-            # Fallback for plain text or missing content-type headers from webhooks
             try:
                 payload = json.loads(request.data.decode('utf-8'))
             except Exception:
@@ -340,79 +365,78 @@ def receive_inbound_call_webhook():
         print(json.dumps(payload, indent=2))
         print("=======================================================================\n")
 
-        # Extract inbound call data
         interaction_id = payload.get("interaction_id")
         attempt_id = payload.get("attempt_id")
         caller_phone = payload.get("user_phone_number") or payload.get("user_contact")
-        agent_phone = payload.get("agent_phone_number")
-        duration = payload.get("duration") or payload.get("duration_in_seconds")
-        transcript = payload.get("interaction_transcript") or payload.get("transcript")
         
-        extracted_variables = (
-            payload.get("final_agent_variables") or 
-            payload.get("agent_variables") or 
-            {}
-        )
+        # Safely extract variables from webhook payload
+        extracted_variables = extract_all_variables(payload)
+
+        # FALLBACK: If only 'call_summary' exists or variables are missing, fetch directly from Analytics API
+        if (not extracted_variables or list(extracted_variables.keys()) == ["call_summary"]) and interaction_id:
+            print(f"[FETCH] Webhook payload missing deep variables. Querying Sarvam Analytics for {interaction_id}...")
+            try:
+                # Small wait to give Sarvam's LLM pipeline time to complete extraction
+                import time
+                time.sleep(1.5)
+                
+                analytics_url = f"{BASE_ANALYTICS_URL}/attempts"
+                now = datetime.now(timezone.utc)
+                params = {
+                    "start_datetime": (now - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                    "end_datetime": (now + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                }
+                res = requests.get(analytics_url, params=params, headers=get_headers(), timeout=10)
+                if res.status_code == 200:
+                    items = res.json().get("items") or res.json().get("attempts") or []
+                    for item in items:
+                        if item.get("interaction_id") == interaction_id or item.get("attempt_id") == attempt_id:
+                            analytics_vars = item.get("agent_variables") or {}
+                            if analytics_vars:
+                                extracted_variables.update(analytics_vars)
+                                print("[SUCCESS] Retrieved full variables from Analytics API:", analytics_vars)
+                            break
+            except Exception as fetch_err:
+                print(f"[WARN] Failed to fetch analytics fallback: {fetch_err}")
 
         processed_call_data = {
             "type": "inbound_call_completed",
             "interaction_id": interaction_id,
             "attempt_id": attempt_id,
             "user_phone": caller_phone,
-            "agent_phone": agent_phone,
-            "duration_seconds": duration,
-            "transcript": transcript,
             "extracted_variables": extracted_variables,
-            "received_at": datetime.now(timezone.utc).isoformat(),
-            "raw_payload": payload
+            "received_at": datetime.now(timezone.utc).isoformat()
         }
 
         recent_inbound_calls.insert(0, processed_call_data)
         if len(recent_inbound_calls) > 20:
             recent_inbound_calls.pop()
 
-        # Trigger automatic outbound call on hangup
-        outbound_target_number =  DEFAULT_OUTBOUND_PHONE_NUMBER
-        # outbound_variables = {
-        #     "inbound_caller_phone": caller_phone,
-        #     "previous_interaction_id": interaction_id,
-        #     **extracted_variables
-        # }
-        outbound_variables={
-    # "bookingDate": "02-10-2026",
-    # "CurrentTransitState": "Satara Hub",
-    # "CustomerName": "Ramya",
-    # "CustomerQuery": "tracking shows “In Transit” status for past 2 days. What is the reason?",
-    # "Destination": "JNPT",
-    # "capacity_required": "9 Ton",
-    # "cargo_weight": "8.5 Ton",
-    # "cargo_description": "Automobile spare parts",
-    # "vendor_name": "Sri Balaji Transport",
-    # "vendor_contact_name": "Murali",
-    # "vendor_phone": "+919841761512",
-    # "special_requirements": "GPS required, no transshipment"
-}
+        # Trigger automatic outbound call on hangup with ALL extracted output variables
+        outbound_target_number = caller_phone or DEFAULT_OUTBOUND_PHONE_NUMBER
+        outbound_variables = {
+            "inbound_caller_phone": caller_phone,
+            "previous_interaction_id": interaction_id,
+            **extracted_variables
+        }
 
-        print(f"[WORKFLOW] Inbound hangup received. Initiating automated outbound call to {outbound_target_number}...")
+        print(f"[WORKFLOW] Initiating automated outbound call to {outbound_target_number} with extracted variables...")
         
         outbound_response, status_code = trigger_outbound_call_internal(
             target_phone_number=outbound_target_number,
-            initial_variables=outbound_variables,
-            app_id = ACPL_AGENT_STAFF_CHECKING_APP_ID,
+            initial_variables=outbound_variables
         )
 
         return jsonify({
             "status": "success",
             "message": "Inbound hangup processed & outbound call triggered",
-            "inbound_interaction_id": interaction_id,
-            "outbound_trigger_status": status_code,
-            "outbound_response": outbound_response
+            "extracted_variables": extracted_variables,
+            "outbound_trigger_status": status_code
         }), 200
 
     except Exception as e:
         print(f"[ERROR] Failed to process inbound webhook: {str(e)}")
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
-
 # -------------------------------------------------------------------
 # Helper API Endpoint: Fetch Latest Inbound Calls for Frontend Polling
 # -------------------------------------------------------------------
