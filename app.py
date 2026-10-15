@@ -456,9 +456,9 @@ def receive_inbound_call_webhook():
         print(json.dumps(payload, indent=2))
         print("=======================================================================\n")
 
-        if payload.get("final_agent_variables").get("hub_follow_up_required") != True:
-            print("[IGNORED] No follow-up required. Ignoring webhook...")
-            return jsonify({"status": "ignored"}), 200
+        # if payload.get("final_agent_variables").get("hub_follow_up_required") != True:
+        #     print("[IGNORED] No follow-up required. Ignoring webhook...")
+        #     return jsonify({"status": "ignored"}), 200
 
         interaction_id = payload.get("interaction_id")
         attempt_id = payload.get("attempt_id")
