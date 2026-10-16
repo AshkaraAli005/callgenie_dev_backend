@@ -82,6 +82,76 @@ def get_candidate_app_ids(target_app_id=None, attempt_id=None):
             candidates.append(default_id)
     return candidates
 
+@app.route("/api/sarvam/outboundAcpl", methods=["POST"])
+def trigger_outbound_call_Acpl():
+    """Internal helper to initiate an outbound call via Sarvam API."""
+    # target_app_id = app_id or SARVAM_APP_ID
+    body = request.get_json() or {}
+    target_app_id = body.get("app_id") 
+    initial_variables = body.get("initial_agent_variables")
+    target_phone_number = body.get("user_phone_number")
+    initial_variables ={
+    # "hub_follow_up_cases": [
+    #   {
+    #     "gc_number": "DM 2610098421",
+    #     "query": "My shipment is delayed. What is the reason?"
+    #   }
+    # ],
+    # "hub_follow_up_required": True,
+    "GCNumber": [
+      "DM 2610098421"
+    ],
+    "CustomerQuery": [
+      "My shipment is delayed. What is the reason?"
+    ],
+    "FromStation": [
+      "Surat Ringroad"
+    ],
+    "Destination": [
+      "Ahmedabad Sanand"
+    ],
+    # "customer_phone_number": "NOT_AVAILABLE"
+    }
+    try:
+        payload = {
+            "app_config": {
+                "app_id": "ACPL-Cargo--48497236-b1ed",
+                "app_version": 1,
+                "connection_config": {
+                    "connection_id": CONNECTION_ID,
+                    "agent_phone_number": AGENT_PHONE_NUMBER
+                },
+                "agent_variables": initial_variables or {}
+            },
+            "user_config": {
+                "user_phone_number": target_phone_number
+            }
+        }
+
+        print(f"\n[OUTBOUND] App={target_app_id} → {target_phone_number}")
+        print(json.dumps(payload, indent=2))
+
+        response = requests.post(
+            f"{BASE_OUTBOUND_URL}/outbounds",
+            json=payload,
+            headers=get_headers(),
+            timeout=15
+        )
+        res_json = response.json()
+
+        # Store attempt_id → app_id mapping (critical for later analytics lookup)
+        att_id = res_json.get("attempt_id") or res_json.get("id")
+        if att_id:
+            attempt_to_app_map[att_id] = target_app_id
+            print(f"[MAP] Stored attempt_id={att_id} → app_id={target_app_id}")
+
+        return res_json, response.status_code
+    except Exception as e:
+        print(f"[ERROR] Failed to trigger internal outbound call: {str(e)}")
+        return {"error": str(e)}, 500
+
+
+
 
 # ─────────────────────────────────────────────────────────
 # Helper: Trigger Outbound Call programmatically
@@ -456,9 +526,9 @@ def receive_inbound_call_webhook():
         print(json.dumps(payload, indent=2))
         print("=======================================================================\n")
 
-        # if payload.get("final_agent_variables").get("hub_follow_up_required") != True:
-        #     print("[IGNORED] No follow-up required. Ignoring webhook...")
-        #     return jsonify({"status": "ignored"}), 200
+        if payload.get("final_agent_variables").get("hub_follow_up_required") != True:
+            print("[IGNORED] No follow-up required. Ignoring webhook...")
+            return jsonify({"status": "ignored"}), 200
 
         interaction_id = payload.get("interaction_id")
         attempt_id = payload.get("attempt_id")
@@ -519,9 +589,13 @@ def receive_inbound_call_webhook():
         # Trigger automatic outbound call on hangup
         outbound_target_number = DEFAULT_OUTBOUND_PHONE_NUMBER
         outbound_variables = {
-            "inbound_caller_phone": caller_phone,
-            "previous_interaction_id": interaction_id,
-            **extracted_variables
+            "GCNumber":extracted_variables.get("gc_numbers_requiring_hub_follow_up"),
+            "CustomerQuery":extracted_variables.get("customer_queries_requiring_hub_follow_up"),
+            "FromStation":extracted_variables.get("hub_issue_from_location"),
+            "Destination":extracted_variables.get("hub_issue_to_location"),
+            # "inbound_caller_phone": caller_phone,
+            # "previous_interaction_id": interaction_id,
+
         }
 
         # Pick the outbound app_id (default: ACPL or MINI)
