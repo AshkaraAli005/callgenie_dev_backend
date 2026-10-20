@@ -593,7 +593,133 @@ def receive_inbound_call_webhook():
             "CustomerQuery":extracted_variables.get("customer_queries_requiring_hub_follow_up"),
             "FromStation":extracted_variables.get("hub_issue_from_location"),
             "Destination":extracted_variables.get("hub_issue_to_location"),
-            # "inbound_caller_phone": caller_phone,
+            "customer_number":caller_phone,
+            # "previous_interaction_id": interaction_id,
+
+        }
+
+        # Pick the outbound app_id (default: ACPL or MINI)
+        outbound_app_id = ACPL_AGENT_STAFF_CHECKING_APP_ID or SARVAM_APP_ID
+
+        print(f"[WORKFLOW] Triggering automated outbound call to {outbound_target_number} using app={outbound_app_id}")
+
+        outbound_response, status_code = trigger_outbound_call_internal(
+            target_phone_number=outbound_target_number,
+            initial_variables=outbound_variables,
+            app_id=outbound_app_id
+        )
+
+        return jsonify({
+            "status": "success",
+            "message": "Inbound hangup processed & outbound call triggered",
+            "inbound_interaction_id": interaction_id,
+            "extracted_variables": extracted_variables,
+            "outbound_trigger_status": status_code,
+            "outbound_response": outbound_response
+        }), 200
+
+    except Exception as e:
+        print(f"[ERROR] Failed to process inbound webhook: {str(e)}")
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500
+
+@app.route("/api/sarvam/aiOutbound-webhook", methods=["POST"])
+def receive_ai_outbound_call_webhook():
+    """
+    1. Receives inbound call hangup notification from Sarvam AI.
+    2. Extracts final agent output variables & call transcript safely.
+    3. Triggers an automatic outbound call using default mobile number + extracted data.
+    """
+    try:
+        # ROBUST payload parsing
+        payload = {}
+        if request.is_json:
+            payload = request.get_json(silent=True) or {}
+        else:
+            try:
+                payload = json.loads(request.data.decode('utf-8'))
+            except Exception:
+                payload = request.form.to_dict() or {}
+
+        print("\n================ [INBOUND CALL HANGUP WEBHOOK RECEIVED] ================")
+        print(json.dumps(payload, indent=2))
+        print("=======================================================================\n")
+
+        print("[CHECK] Validating webhook...")
+        print("Payload received:", payload)
+
+        return
+        # if not validate_webhook(payload):
+        #     print("[IGNORED] Invalid webhook. Ignoring webhook...")
+        #     return jsonify({"status": "ignored"}), 200
+
+        if payload.get("final_agent_variables").get("hub_follow_up_required") != True:
+            print("[IGNORED] No follow-up required. Ignoring webhook...")
+            return jsonify({"status": "ignored"}), 200
+
+        interaction_id = payload.get("interaction_id")
+        attempt_id = payload.get("attempt_id")
+        caller_phone = payload.get("user_phone_number") or payload.get("user_contact")
+        inbound_app_id = payload.get("app_id") or MINI_APP_ID
+
+        # Safely extract variables from webhook payload
+        extracted_variables = extract_all_variables(payload)
+
+        # FALLBACK: If variables are missing, fetch directly from Analytics API
+        if (not extracted_variables or list(extracted_variables.keys()) == ["call_summary"]) and interaction_id:
+            print(f"[FETCH] Webhook missing deep variables. Querying Analytics for {interaction_id}...")
+            try:
+                time.sleep(1.5)  # Allow Sarvam LLM pipeline to finish extraction
+
+                now = datetime.now(timezone.utc)
+                params = {
+                    "start_datetime": (now - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                    "end_datetime": (now + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                }
+
+                # Search all candidate apps for this interaction
+                for current_app in get_candidate_app_ids(inbound_app_id, attempt_id):
+                    analytics_url = f"{get_analytics_url(current_app)}/attempts"
+                    res = requests.get(analytics_url, params=params, headers=get_headers(), timeout=10)
+                    if res.status_code != 200:
+                        continue
+
+                    items = res.json().get("items") or res.json().get("attempts") or []
+                    found = False
+                    for item in items:
+                        if item.get("interaction_id") == interaction_id or item.get("attempt_id") == attempt_id:
+                            analytics_vars = item.get("agent_variables") or {}
+                            if analytics_vars:
+                                extracted_variables.update(analytics_vars)
+                                print(f"[SUCCESS] Retrieved variables from app={current_app}:", analytics_vars)
+                                found = True
+                            break
+                    if found:
+                        break
+            except Exception as fetch_err:
+                print(f"[WARN] Failed to fetch analytics fallback: {fetch_err}")
+
+        processed_call_data = {
+            "type": "inbound_call_completed",
+            "interaction_id": interaction_id,
+            "attempt_id": attempt_id,
+            "user_phone": caller_phone,
+            "extracted_variables": extracted_variables,
+            "received_at": datetime.now(timezone.utc).isoformat(),
+            "raw_payload": payload
+        }
+
+        recent_inbound_calls.insert(0, processed_call_data)
+        if len(recent_inbound_calls) > 20:
+            recent_inbound_calls.pop()
+
+        # Trigger automatic outbound call on hangup
+        outbound_target_number = DEFAULT_OUTBOUND_PHONE_NUMBER
+        outbound_variables = {
+            "GCNumber":extracted_variables.get("gc_numbers_requiring_hub_follow_up"),
+            "CustomerQuery":extracted_variables.get("customer_queries_requiring_hub_follow_up"),
+            "FromStation":extracted_variables.get("hub_issue_from_location"),
+            "Destination":extracted_variables.get("hub_issue_to_location"),
+            "customer_number":caller_phone,
             # "previous_interaction_id": interaction_id,
 
         }
