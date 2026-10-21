@@ -88,7 +88,7 @@ def trigger_outbound_call_Acpl():
     # target_app_id = app_id or SARVAM_APP_ID
     body = request.get_json() or {}
     target_app_id = body.get("app_id") 
-    initial_variables = body.get("initial_agent_variables")
+    # initial_variables = body.get("initial_agent_variables")
     target_phone_number = body.get("user_phone_number")
     initial_variables ={
     # "hub_follow_up_cases": [
@@ -98,16 +98,16 @@ def trigger_outbound_call_Acpl():
     #   }
     # ],
     # "hub_follow_up_required": True,
-    "GCNumber": [
+    "gc_numbers_requiring_hub_follow_up": [
       "DM 2610098421"
     ],
-    "CustomerQuery": [
+    "customer_querries_requiring_hub_follow_up": [
       "My shipment is delayed. What is the reason?"
     ],
-    "FromStation": [
+    "hub_issue_from_location": [
       "Surat Ringroad"
     ],
-    "Destination": [
+    "hub_issue_to_location": [
       "Ahmedabad Sanand"
     ],
     # "customer_phone_number": "NOT_AVAILABLE"
@@ -589,10 +589,10 @@ def receive_inbound_call_webhook():
         # Trigger automatic outbound call on hangup
         outbound_target_number = DEFAULT_OUTBOUND_PHONE_NUMBER
         outbound_variables = {
-            "GCNumber":extracted_variables.get("gc_numbers_requiring_hub_follow_up"),
-            "CustomerQuery":extracted_variables.get("customer_queries_requiring_hub_follow_up"),
-            "FromStation":extracted_variables.get("hub_issue_from_location"),
-            "Destination":extracted_variables.get("hub_issue_to_location"),
+            "gc_numbers_requiring_hub_follow_up":extracted_variables.get("gc_numbers_requiring_hub_follow_up"),
+            "customer_querries_requiring_hub_follow_up":extracted_variables.get("customer_queries_requiring_hub_follow_up"),
+            "hub_issue_from_location":extracted_variables.get("hub_issue_from_location"),
+            "hub_issue_to_location":extracted_variables.get("hub_issue_to_location"),
             "customer_number":caller_phone,
             # "previous_interaction_id": interaction_id,
 
